@@ -1,56 +1,6 @@
 #!/usr/bin/env python3
 # SPDX-License-Identifier: MIT
 # Copyright (c) 2026 Mark Moore
-"""
-gen_wallpaper.py — DankMaterialShell Vector Wallpaper Generator
-===============================================================
-Generates a single SVG wallpaper and prints its path to stdout so the calling
-QML process (VectorWallpaper.qml) can pick it up.  The SVG is then converted
-to PNG by rsvg-convert and applied by swww / swaybg / hyprpaper.
-
-QUICK USAGE (manual)
---------------------
-    # Single seed colour — palette is derived algorithmically:
-    python3 gen_wallpaper.py --color "#6750A4" --style geometric --seed 42
-
-    # Full Material You palette (what the plugin passes automatically):
-    python3 gen_wallpaper.py \
-        --colors "#6750A4" "#625B71" "#7D5260" "#4F378B" "#4A4458" "#633B48" \
-        --surface "#141218" --accent "#D0BCFF" \
-        --mode dark --style cosmos --seed 42 \
-        --width 2560 --height 1440 \
-        --output ~/Pictures/DankWallpapers/my_test.svg
-
-OUTPUT
-------
-The script always prints the SVG path to stdout on success (one line).
-Exit code 0 = success, non-zero = error (details on stderr).
-
-PIPELINE OVERVIEW
------------------
-    1. Palette — either derived from a single hue (palette_from_color) or
-       assembled directly from Material You tokens (palette_from_matugen).
-    2. SVGBuilder — a thin wrapper that accumulates <defs> and elements and
-       renders them into a valid SVG document.
-    3. Style function — draws shapes into the SVGBuilder using the palette.
-    4. File write — saves the SVG, prints the path.
-
-ADDING A NEW STYLE
-------------------
-    1. Define  def style_myname(svg, rng, bg, colors, accent): ...
-    2. Add it to the STYLES dict at the bottom of this section.
-    3. It will automatically appear in --style choices and the plugin's
-       settings panel dropdown.
-
-STANDARD LIBRARY REFERENCES
-----------------------------
-    argparse  https://docs.python.org/3/library/argparse.html
-    colorsys  https://docs.python.org/3/library/colorsys.html
-    math      https://docs.python.org/3/library/math.html
-    os        https://docs.python.org/3/library/os.html
-    pathlib   https://docs.python.org/3/library/pathlib.html
-    random    https://docs.python.org/3/library/random.html
-"""
 
 import argparse
 import colorsys  # https://docs.python.org/3/library/colorsys.html
@@ -60,22 +10,10 @@ import random  # https://docs.python.org/3/library/random.html
 import sys
 from pathlib import Path  # https://docs.python.org/3/library/pathlib.html
 
-
 # ── Output directory ───────────────────────────────────────────────────────────
 
-
 def default_output_dir() -> Path:
-    """
-    Return ~/Pictures/DankWallpapers as a Path, creating it if needed.
-
-    Uses the HOME environment variable so it works inside Quickshell's
-    sandboxed process environment where Path.home() might not resolve
-    correctly.  Falls back to Path.home() if HOME is unset.
-
-    Relevant stdlib docs:
-        os.environ  https://docs.python.org/3/library/os.html#os.environ
-        Path.mkdir  https://docs.python.org/3/library/pathlib.html#pathlib.Path.mkdir
-    """
+    
     home = Path(os.environ.get("HOME", str(Path.home())))
     out_dir = home / "Pictures" / "DankWallpapers"
     # parents=True  → create intermediate dirs (Pictures/) if missing
@@ -83,22 +21,10 @@ def default_output_dir() -> Path:
     out_dir.mkdir(parents=True, exist_ok=True)
     return out_dir
 
-
 # ── Colour helpers ─────────────────────────────────────────────────────────────
 
-
 def hex_to_hsl(hexcol: str):
-    """
-    Convert a CSS hex colour string to (hue°, saturation%, lightness%).
-
-    Accepts both 3-digit (#rgb) and 6-digit (#rrggbb) forms.
-
-    colorsys.rgb_to_hls returns (h, l, s) — note the unusual order (HLS not
-    HSL).  We reorder to the more conventional HSL and scale to human-friendly
-    ranges: hue 0–360, saturation 0–100, lightness 0–100.
-
-    stdlib: https://docs.python.org/3/library/colorsys.html#colorsys.rgb_to_hls
-    """
+    
     hexcol = hexcol.lstrip("#")
     if len(hexcol) == 3:
         hexcol = "".join(c * 2 for c in hexcol)
@@ -106,116 +32,20 @@ def hex_to_hsl(hexcol: str):
     h, l, s = colorsys.rgb_to_hls(r, g, b)
     return h * 360, s * 100, l * 100
 
-
 def hsla(h, s, l, a=1.0):
-    """
-    Format a colour as an SVG/CSS hsla() string.
-
-    SVG 1.1 and CSS Color Level 3 both accept hsla().
-    The hue is automatically wrapped to 0–360 via modulo so callers can
-    pass values like 390 or -10 freely.
-
-    Parameters
-    ----------
-    h : float  Hue in degrees (0–360, wraps).
-    s : float  Saturation percentage (0–100).
-    l : float  Lightness percentage (0–100).
-    a : float  Alpha / opacity (0.0 = transparent, 1.0 = opaque).
-    """
+    
     return f"hsla({h % 360:.1f},{s:.1f}%,{l:.1f}%,{a:.3f})"
 
-
 def lerp(a, b, t):
-    """
-    Linear interpolation between a and b.
-
-    lerp(a, b, 0) == a
-    lerp(a, b, 1) == b
-    lerp(a, b, 0.5) == midpoint
-
-    Used by style_gradient_waves to space wave baselines evenly across the
-    screen height.
-    """
+    
     return a + (b - a) * t
 
-
 # ── Palette builders ───────────────────────────────────────────────────────────
-
 
 def palette_from_color(
     hex_color: str, rng: random.Random, dark_mode: bool | None = None
 ):
-    """
-    Derive a full wallpaper palette from a single seed hex colour.
-
-    This path is used when only --color is supplied (no --colors).  It builds
-    a set of harmonious hues algorithmically, so results look good even with
-    arbitrary input colours.
-
-    Returns
-    -------
-    (bg, colors, accent, dark_mode)
-        bg      : str  — background fill colour (hsla format)
-        colors  : list[str] — 3–5 shape fill colours (hsla format)
-        accent  : str  — vivid highlight colour (hsla format)
-        dark_mode: bool — True if a dark background was chosen
-
-    TUNING GUIDE
-    ------------
-    Colour harmony scheme
-        The scheme is picked randomly from four options.  To always use one,
-        replace rng.choice([...]) with a literal string.
-        "analogous"          — colours close together on the wheel (cohesive)
-        "triadic"            — three equidistant hues (vibrant, balanced)
-        "complementary"      — opposite hues with close neighbours (punchy)
-        "split_complementary"— primary + two near-complements (dynamic)
-
-    Background lightness (dark mode)
-        bg_l = rng.uniform(5, 14)
-        Range 0–100.  Lower = darker.  Try (2, 8) for near-black or
-        (15, 25) for a "charcoal" feel.
-        stdlib: https://docs.python.org/3/library/random.html#random.Random.uniform
-
-    Background lightness (light mode)
-        bg_l = rng.uniform(88, 97)
-        Higher = whiter.  Try (80, 90) for a slightly tinted paper look.
-
-    Shape colour lightness (dark mode)
-        fg_l_range = (50, 82)
-        Shapes are mid-to-bright so they read against a dark background.
-        Narrow the range for more uniform shapes, e.g. (60, 70).
-
-    Shape colour lightness (light mode)
-        fg_l_range = (28, 62)
-        Darker shapes on a light background.  Try (20, 50) for more contrast.
-
-    Saturation clamping
-        sat = max(40, min(95, base_s + rng.uniform(-15, 15)))
-        40 = minimum saturation (never fully grey).
-        95 = maximum saturation (never fully blown-out).
-        Widen the uniform range for more varied saturation across shapes.
-
-    Background saturation
-        rng.uniform(20, 40)  inside the hsla() bg call.
-        Low saturation keeps the background neutral.  Raise the upper bound
-        (e.g. 60) for a more colourful tinted background.
-
-    Accent hue offset
-        (base_h + 180 + rng.uniform(-20, 20))
-        180° = direct complement.  ±20 adds variation so the accent is
-        near-complementary rather than exact.  Set to 0 to always use the
-        exact complement.
-
-    Accent saturation/lightness
-        rng.uniform(70, 100)  saturation  — keeps it vivid
-        rng.uniform(55, 72)   lightness   — bright but not white-washed
-        Raise saturation min for even more vivid accents.
-
-    stdlib references
-        random.Random.choice   https://docs.python.org/3/library/random.html#random.Random.choice
-        random.Random.uniform  https://docs.python.org/3/library/random.html#random.Random.uniform
-        colorsys               https://docs.python.org/3/library/colorsys.html
-    """
+    
     base_h, base_s, base_l = hex_to_hsl(hex_color)
 
     if dark_mode is None:
@@ -254,7 +84,6 @@ def palette_from_color(
 
     return bg, colors, accent, dark_mode
 
-
 def palette_from_matugen(
     hex_colors: list,
     rng: random.Random,
@@ -262,66 +91,7 @@ def palette_from_matugen(
     accent: str | None = None,
     dark_mode: bool | None = None,
 ):
-    """
-    Assemble a wallpaper palette directly from Material You colour tokens.
-
-    The plugin passes six shape tokens from DankMaterialShell's Theme object
-    in this fixed order, plus surface and accent as separate parameters:
-        index 0  primary              Main brand colour (e.g. blue family)
-        index 1  secondary            Second accent (e.g. teal/green family)
-        index 2  tertiary             Third accent (e.g. orange/rose family)
-        index 3  primaryContainer     Subtle container for primary elements
-        index 4  secondaryContainer   Subtle container for secondary elements
-        index 5  tertiaryContainer    Subtle container for tertiary elements
-    surface : Theme.surface — already the correct tone for dark/light mode;
-              used directly as the background without any lightness manipulation.
-    accent  : Theme.inversePrimary — primary in the opposite theme, naturally
-              complementary; used as the highlight/sparkle colour.
-
-    Because these tokens are already harmonious (generated by Matugen from the
-    current wallpaper's seed colour), no additional colour-theory maths is
-    needed — they are used as-is for SVG fills.  SVG accepts #rrggbb hex
-    natively so no conversion is required.
-
-    Returns
-    -------
-    (bg, colors, accent, dark_mode)  — same contract as palette_from_color.
-
-    TUNING GUIDE
-    ------------
-    Background colour
-        bg = surface
-        surface is the Material You token that defines the canvas colour —
-        very dark in dark mode, near-white in light mode.  It's used directly
-        so the wallpaper background always matches the shell's exact tone.
-        Fallback when surface is None: "#141218" (dark) or "#FEFBFF" (light).
-        ← tune: replace fallbacks with a custom hex if desired.
-
-    Shape palette
-        colors = list(hex_colors)
-        All six tokens are passed to the style functions.  Style functions
-        pick from this list randomly, so adding more colours increases variety.
-        Remove indices you don't want; just ensure at least 2 remain.
-        With three hue families × two intensities (vivid + container) the
-        shapes naturally form cohesive clusters while staying varied.
-
-    Accent colour
-        acc = accent  (inversePrimary)
-        inversePrimary is the primary colour rendered in the opposite theme —
-        by Material You spec it is always high-contrast against the primary
-        family, making it an ideal sparkle/highlight.
-        Fallback: hex_colors[0] (primary) if accent is None.
-        ← tune: swap to hex_colors[2] (tertiary) for a more exotic accent.
-
-    dark_mode detection
-        Uses surface lightness when available (most reliable M3 indicator).
-        Falls back to primary lightness.  Threshold of 50 is reliable for
-        Material You themes but can be adjusted for custom palettes.
-
-    stdlib references
-        random.Random.uniform  https://docs.python.org/3/library/random.html#random.Random.uniform
-        colorsys               https://docs.python.org/3/library/colorsys.html
-    """
+    
     if dark_mode is None:
         if surface:
             _, _, surf_l = hex_to_hsl(surface)
@@ -345,30 +115,10 @@ def palette_from_matugen(
 
     return bg, colors, acc, dark_mode
 
-
 # ── SVG builder ────────────────────────────────────────────────────────────────
 
-
 class SVGBuilder:
-    """
-    Minimal SVG document builder.
-
-    Accumulates two lists of raw XML strings:
-        defs     — content of the <defs> block (gradients, filters).
-        elements — content of the <svg> body (shapes, paths, lines).
-
-    After all style functions have added their elements, render() assembles
-    them into a complete, valid SVG document string.
-
-    IDs
-    ---
-    uid(prefix) returns a unique string ID on every call so that multiple
-    filters/gradients never share an id attribute.  SVG requires unique IDs
-    within a document.
-
-    SVG specification reference:
-        https://www.w3.org/TR/SVG11/
-    """
+    
 
     def __init__(self, width, height):
         self.w = width
@@ -378,34 +128,20 @@ class SVGBuilder:
         self._id = 0
 
     def uid(self, prefix="e"):
-        """Return a document-unique ID string, e.g. 'blur3' or 'grad7'."""
+        
         self._id += 1
         return f"{prefix}{self._id}"
 
     def add_def(self, xml):
-        """Append raw XML to the <defs> section (gradients, filters, etc.)."""
+        
         self.defs.append(xml)
 
     def add(self, xml):
-        """Append a raw SVG element string to the document body."""
+        
         self.elements.append(xml)
 
     def linear_gradient(self, id_, stops, x1=0, y1=0, x2=1, y2=1):
-        """
-        Add a linearGradient to <defs>.
-
-        Parameters
-        ----------
-        id_   : str   — unique id referenced by fill="url(#id_)"
-        stops : list  — list of (offset, color, opacity) triples
-                        offset is a CSS percentage string, e.g. "0%" or "100%"
-        x1,y1,x2,y2  — gradient vector in objectBoundingBox coordinates
-                        (0,0)→(1,1) = top-left to bottom-right diagonal
-                        (0,0)→(1,0) = left to right horizontal
-                        (0,0)→(0,1) = top to bottom vertical
-
-        SVG spec: https://www.w3.org/TR/SVG11/pservers.html#LinearGradientElement
-        """
+        
         s = "".join(
             f'<stop offset="{o}" stop-color="{c}" stop-opacity="{a}"/>'
             for o, c, a in stops
@@ -416,28 +152,14 @@ class SVGBuilder:
         )
 
     def blur_filter(self, id_, std):
-        """
-        Add a Gaussian blur SVG filter to <defs>.
-
-        Parameters
-        ----------
-        id_  : str   — unique id referenced by filter="url(#id_)"
-        std  : float — blur radius in pixels (stdDeviation).
-                       Higher values = softer / more diffuse.
-                       Typical range: 4 (subtle glow) – 130 (nebula-scale blur).
-
-        The filter region is expanded to ±50% on each side so blurred shapes
-        that extend near the canvas edge do not get clipped.
-
-        SVG spec: https://www.w3.org/TR/SVG11/filters.html#feGaussianBlurElement
-        """
+        
         self.add_def(
             f'<filter id="{id_}" x="-50%" y="-50%" width="200%" height="200%">'
             f'<feGaussianBlur stdDeviation="{std}"/></filter>'
         )
 
     def render(self):
-        """Return the complete SVG document as a UTF-8 string."""
+        
         defs_xml = "<defs>" + "".join(self.defs) + "</defs>" if self.defs else ""
         return (
             f'<?xml version="1.0" encoding="UTF-8"?>\n'
@@ -445,7 +167,6 @@ class SVGBuilder:
             f'width="{self.w}" height="{self.h}" viewBox="0 0 {self.w} {self.h}">\n'
             f"{defs_xml}\n{''.join(self.elements)}\n</svg>"
         )
-
 
 # ── Style functions ────────────────────────────────────────────────────────────
 #
@@ -460,53 +181,8 @@ class SVGBuilder:
 # math.tau == 2π  (https://docs.python.org/3/library/math.html#math.tau)
 # ──────────────────────────────────────────────────────────────────────────────
 
-
 def style_geometric(svg, rng, bg, colors, accent):
-    """
-    Geometric — overlapping polygons on a fine grid of small shapes.
-
-    Layers (bottom to top)
-    ----------------------
-    1. Solid background rectangle.
-    2. Large semi-transparent polygons (3–8 sides) scattered across the canvas.
-    3. Grid of small shapes (rect, triangle, diamond, circle) at ~55 % density.
-    4. Faint grid lines using the accent colour.
-    5. Small vivid accent dots.
-
-    TUNING GUIDE
-    ------------
-    Large background polygons
-        Count:    rng.randint(4, 7)          ← number of large polygons
-        Sides:    rng.randint(3, 8)          ← 3=triangle … 8=octagon
-        Radius:   rng.uniform(0.15, 0.45)   ← fraction of min(width, height)
-        Jitter:   rng.uniform(0.7, 1.3)     ← vertex radius variation;
-                                               1.0 = perfect regular polygon
-        Opacity:  rng.uniform(0.07, 0.20)   ← raise for more vivid overlays
-
-    Grid
-        Cell size:    rng.choice([40, 60, 80])  ← pixel size per cell;
-                                                   smaller = denser grid
-        Fill density: rng.random() > 0.45       ← ~55 % of cells filled;
-                                                   lower threshold = denser
-        Shape scale:  rng.uniform(0.3, 0.85)   ← fraction of cell size
-        Opacity:      rng.uniform(0.15, 0.55)
-
-    Grid lines (accent)
-        Opacity:      0.12      ← hardcoded; raise for a visible grid overlay
-        Stroke width: 0.4 px    ← raise for bolder lines
-
-    Accent dots
-        Count:   rng.randint(3, 6)
-        Radius:  rng.uniform(2, 8)   ← px; raise for larger dots
-        Opacity: rng.uniform(0.4, 0.9)
-
-    stdlib references
-        random.Random.randint  https://docs.python.org/3/library/random.html#random.Random.randint
-        random.Random.uniform  https://docs.python.org/3/library/random.html#random.Random.uniform
-        random.Random.choice   https://docs.python.org/3/library/random.html#random.Random.choice
-        math.tau               https://docs.python.org/3/library/math.html#math.tau
-        math.cos / math.sin    https://docs.python.org/3/library/math.html#math.cos
-    """
+    
     W, H = svg.w, svg.h
     svg.add(f'<rect width="{W}" height="{H}" fill="{bg}"/>')
 
@@ -592,38 +268,8 @@ def style_geometric(svg, rng, bg, colors, accent):
             f'opacity="{rng.uniform(0.4, 0.9):.2f}"/>'  # ← tune: dot opacity
         )
 
-
 def blob_path(cx, cy, r, rng, roughness=0.3, n=8):
-    """
-    Generate an SVG path string for an organic blob shape.
-
-    The blob is constructed from n points evenly distributed around a circle
-    of radius r, each perturbed radially by ±roughness.  The points are
-    connected with cubic Bézier curves (the C command) with control points
-    derived from the neighbouring points to keep the curve smooth.
-
-    Parameters
-    ----------
-    cx, cy    : float — centre of the blob in canvas coordinates
-    r         : float — nominal radius in pixels
-    rng       : random.Random — seeded RNG for reproducibility
-    roughness : float — radial jitter fraction (0.0 = smooth circle,
-                        0.5 = very irregular, >1.0 starts self-intersecting)
-                        ← tune: default 0.3
-    n         : int   — number of control points (more = smoother outline,
-                        heavier path string)
-                        ← tune: default 8; try 6 (spikier) or 12 (rounder)
-
-    Bézier tension
-        cp1x = x + (nx - px) * 0.3
-        The factor 0.3 controls how far the control points reach toward their
-        neighbours.  Lower = tighter corners, higher = looser/bubblier curves.
-        ← tune: change 0.3 to 0.1–0.5
-
-    stdlib references
-        math.tau / math.cos / math.sin  https://docs.python.org/3/library/math.html
-        random.Random.uniform           https://docs.python.org/3/library/random.html#random.Random.uniform
-    """
+    
     pts = []
     for i in range(n):
         a = math.tau * i / n
@@ -647,49 +293,8 @@ def blob_path(cx, cy, r, rng, roughness=0.3, n=8):
     d.append("Z")
     return " ".join(d)
 
-
 def style_organic(svg, rng, bg, colors, accent):
-    """
-    Organic — layered soft blobs with Gaussian blur, accent particles, curves.
-
-    Layers (bottom to top)
-    ----------------------
-    1. Solid background rectangle.
-    2. Large blurred blobs — heavily softened for an atmospheric backdrop.
-    3. Small sharp blobs — unblurred, semi-transparent for mid-ground detail.
-    4. Accent particle dots — fine scatter across the canvas.
-    5. Flowing quadratic Bézier curves — loose strokes for texture.
-
-    TUNING GUIDE
-    ------------
-    Large blurred blobs
-        Count:      rng.randint(5, 9)           ← number of backdrop blobs
-        Blur std:   rng.uniform(30, 80)         ← px; raise for cloudier blobs
-        Size:       rng.uniform(0.12, 0.35)     ← fraction of min(W,H)
-        Roughness:  0.25 (passed to blob_path)  ← see blob_path docstring
-        Opacity:    rng.uniform(0.25, 0.65)     ← raise for more vivid blobs
-
-    Small sharp blobs (mid-ground)
-        Count:      rng.randint(6, 12)
-        Size:       rng.uniform(0.04, 0.15)     ← fraction of min(W,H)
-        Roughness:  0.35
-        Opacity:    rng.uniform(0.08, 0.30)     ← intentionally subtle
-
-    Accent particle dots
-        Count:      rng.randint(20, 50)         ← raise for a denser field
-        Radius:     rng.uniform(1, 5)           ← px
-        Opacity:    rng.uniform(0.2, 0.7)
-
-    Flowing curves
-        Count:          rng.randint(3, 7)
-        Control points: rng.randint(4, 8)       ← path complexity
-        Stroke width:   rng.uniform(1, 4)       ← px
-        Opacity:        rng.uniform(0.15, 0.45)
-
-    stdlib references
-        random.Random.randint  https://docs.python.org/3/library/random.html#random.Random.randint
-        random.Random.uniform  https://docs.python.org/3/library/random.html#random.Random.uniform
-    """
+    
     W, H = svg.w, svg.h
     svg.add(f'<rect width="{W}" height="{H}" fill="{bg}"/>')
 
@@ -751,54 +356,8 @@ def style_organic(svg, rng, bg, colors, accent):
             f'opacity="{rng.uniform(0.15, 0.45):.3f}"/>'  # ← tune: opacity range
         )
 
-
 def style_circuit(svg, rng, bg, colors, accent):
-    """
-    Circuit — PCB-style trace network with decorated node points.
-
-    Algorithm
-    ---------
-    1. A regular grid is laid over the canvas; each intersection becomes a
-       node with 40 % probability.
-    2. Adjacent nodes are connected by horizontal/vertical trace lines.
-    3. Each node is drawn as one of four decorations (dot, ring, cross, square).
-    4. A random subset of traces is re-drawn with a glow (blur) effect.
-
-    TUNING GUIDE
-    ------------
-    Grid
-        Cell size: rng.randint(40, 70)    ← px; smaller = denser, finer traces
-                                            Try 20–30 for microchip density.
-
-    Node density
-        rng.random() < 0.4               ← 40 % of intersections become nodes.
-                                            Raise to 0.6 for a busier board.
-
-    Connections per node
-        rng.randint(1, 3)                ← each node connects to 1–3 neighbours.
-                                            Raise upper bound for more branches.
-
-    Trace appearance
-        Stroke width:  rng.uniform(1, 2.5)   ← px
-        Opacity:       rng.uniform(0.3, 0.7)
-
-    Node decorations
-        Radius:  rng.uniform(3, 8)  ← px; raise for larger node markers.
-        Opacity: rng.uniform(0.5, 1.0)  ← nodes are intentionally brighter.
-        Kinds:   ["dot", "ring", "cross", "square"]  ← remove unwanted styles.
-
-    Glow segments
-        Count:     rng.randint(3, 8)   ← highlighted trace segments.
-        Blur std:  4 px (hardcoded)    ← raise for a wider glow halo.
-        Stroke:    3 px (hardcoded)    ← raise for bolder glow traces.
-        Opacity:   0.6 (hardcoded)
-
-    stdlib references
-        random.Random.randint  https://docs.python.org/3/library/random.html#random.Random.randint
-        random.Random.random   https://docs.python.org/3/library/random.html#random.Random.random
-        random.Random.sample   https://docs.python.org/3/library/random.html#random.Random.sample
-        random.Random.choice   https://docs.python.org/3/library/random.html#random.Random.choice
-    """
+    
     W, H = svg.w, svg.h
     svg.add(f'<rect width="{W}" height="{H}" fill="{bg}"/>')
 
@@ -885,63 +444,8 @@ def style_circuit(svg, rng, bg, colors, accent):
             f'filter="url(#{fid})"/>'
         )
 
-
 def style_cosmos(svg, rng, bg, colors, accent):
-    """
-    Cosmos — deep-space scene with nebulae, star field, and shooting stars.
-
-    NOTE: This style always produces a dark background regardless of the
-    --mode flag.  Stars and nebulae require a dark sky to be visible.
-    If you want a light-mode variant, replace dark_bg with the bg argument.
-
-    Layers (bottom to top)
-    ----------------------
-    1. Deep-space background rectangle (very dark blue-to-indigo).
-    2. Nebula clouds — large, heavily blurred, coloured ellipses.
-    3. Background star field — hundreds of tiny circles.
-    4. Bright stars — small circles with a soft glow halo.
-    5. Shooting stars — fading linear gradient streaks.
-
-    TUNING GUIDE
-    ------------
-    Sky colour
-        Hue:        rng.uniform(220, 270)   ← blue (220°) to indigo (270°).
-                                               Try (260, 300) for a purple sky
-                                               or (170, 220) for a teal nebula.
-        Saturation: rng.uniform(30, 60)     ← raise for a more vivid sky.
-        Lightness:  rng.uniform(3, 10)      ← raise to (10, 20) for "dusk" feel.
-
-    Nebula clouds
-        Count:   rng.randint(3, 6)
-        Blur:    rng.uniform(60, 130)      ← px stdDeviation; raise for bigger halos
-        Width:   rng.uniform(0.15, 0.5)   ← fraction of canvas width
-        Height:  rng.uniform(0.1, 0.4)    ← fraction of canvas height
-        Opacity: rng.uniform(0.2, 0.55)
-
-    Background star field
-        Count:    rng.randint(300, 700)    ← raise for a milky-way density field
-        Radius:   rng.uniform(0.3, 2.2)   ← px; keep small for distant stars
-        Opacity:  rng.uniform(0.5, 1.0)
-        Colours:  ["#ffffff","#fffde7","#e3f2fd","#fce4ec", accent]
-                  ← add or remove star tint colours freely
-
-    Bright stars (with glow)
-        Count:      rng.randint(10, 25)
-        Radius:     rng.uniform(2, 5)      ← px; the glow halo is 2× this
-        Glow blur:  rng.uniform(3, 10)     ← px; raise for a larger diffraction spike
-
-    Shooting stars
-        Count:   rng.randint(2, 5)
-        Length:  rng.uniform(80, 200)      ← px; raise for longer streaks
-        Angle:   rng.uniform(π/6, π/3)    ← 30°–60° from horizontal;
-                                              narrower range = more consistent direction
-
-    stdlib references
-        random.Random.randint  https://docs.python.org/3/library/random.html#random.Random.randint
-        random.Random.uniform  https://docs.python.org/3/library/random.html#random.Random.uniform
-        math.pi                https://docs.python.org/3/library/math.html#math.pi
-        math.cos / math.sin    https://docs.python.org/3/library/math.html#math.cos
-    """
+    
     W, H = svg.w, svg.h
 
     # Always dark — stars are invisible on a light background
@@ -1018,66 +522,8 @@ def style_cosmos(svg, rng, bg, colors, accent):
             f'stroke-width="{rng.uniform(0.5, 1.5):.2f}" opacity="0.8"/>'  # ← tune: width, opacity
         )
 
-
 def style_gradient_waves(svg, rng, bg, colors, accent):
-    """
-    Gradient Waves — layered sinusoidal bands with an accent glow.
-
-    Each wave is a filled SVG path that follows a sine curve across the canvas,
-    producing a stacked beach-wave / aurora effect.  Waves are layered bottom
-    to top and cycle through the colour palette.
-
-    Layers (bottom to top)
-    ----------------------
-    1. Solid background rectangle.
-    2. n_waves sinusoidal filled bands.
-    3. A single softly glowing horizontal ellipse at mid-height (accent).
-
-    TUNING GUIDE
-    ------------
-    Wave count
-        n_waves = rng.randint(6, 14)        ← more waves = busier, more layered
-
-    Wave amplitude
-        rng.uniform(0.03, 0.12) * H         ← vertical swing as fraction of height.
-                                               0.03 = gentle ripple, 0.12 = bold wave.
-                                               Raise upper bound for dramatic crests.
-
-    Wave frequency
-        rng.uniform(1, 3)                   ← complete cycles across the canvas.
-                                               1 = one full S-curve, 3 = three crests.
-                                               Raise for tighter, more turbulent waves.
-
-    Wave phase
-        rng.uniform(0, math.tau)            ← random horizontal offset per wave
-                                               so waves don't all align at x=0.
-
-    Wave baseline spacing
-        lerp(0.15, 0.92, t) * H            ← waves spread from 15 % to 92 % height.
-                                               Adjust 0.15/0.92 to shift or compress
-                                               the band region.
-
-    Wave opacity
-        rng.uniform(0.35, 0.65)             ← per-wave opacity; waves are additive
-                                               so total effect is stronger than any
-                                               single value suggests.
-
-    Path sampling step
-        step = 4                            ← x-step in pixels for path points.
-                                               Lower = smoother curve, heavier SVG.
-
-    Accent glow ellipse
-        Width:   W * 0.4    ← 40 % of canvas width; raise for a broader halo.
-        Height:  H * 0.08   ← 8 % of canvas height; raise for a taller band.
-        Blur:    40 px       ← stdDeviation; raise for a more diffuse glow.
-        Opacity: 0.4
-
-    stdlib references
-        random.Random.randint  https://docs.python.org/3/library/random.html#random.Random.randint
-        random.Random.uniform  https://docs.python.org/3/library/random.html#random.Random.uniform
-        math.sin               https://docs.python.org/3/library/math.html#math.sin
-        math.tau               https://docs.python.org/3/library/math.html#math.tau
-    """
+    
     W, H = svg.w, svg.h
     svg.add(f'<rect width="{W}" height="{H}" fill="{bg}"/>')
 
@@ -1118,7 +564,6 @@ def style_gradient_waves(svg, rng, bg, colors, accent):
         f'fill="{accent}" opacity="0.4" filter="url(#{fid})"/>'  # ← tune: glow opacity
     )
 
-
 # ── Style registry ─────────────────────────────────────────────────────────────
 # Maps the --style CLI value to its function.
 # To add a new style: define style_myname() above, then add it here.
@@ -1131,9 +576,7 @@ STYLES = {
     "gradient_waves": style_gradient_waves,
 }
 
-
 # ── Top-level generate() ───────────────────────────────────────────────────────
-
 
 def generate(
     width=1920,
@@ -1147,61 +590,7 @@ def generate(
     mode="auto",
     output=None,
 ):
-    """
-    Generate one SVG wallpaper and write it to disk.
-
-    Parameters
-    ----------
-    width, height : int
-        Output dimensions in pixels.  Should match the display resolution.
-        The plugin reads these from Qt.application.screens[0].
-
-    style : str
-        One of the keys in STYLES, or "all" to pick one at random.
-        When "all" is used, the seed governs which style is chosen so the
-        result is still reproducible for a given seed.
-
-    seed : int or None
-        Seed for the random number generator.
-        Same seed + same colours → identical output every time.
-        None → non-deterministic (different result each run).
-        stdlib: https://docs.python.org/3/library/random.html#random.seed
-
-    color : str
-        Single hex colour used by palette_from_color (the --colors fallback).
-
-    colors : list[str] or None
-        Six Material You hex tokens in this order:
-            primary, secondary, tertiary,
-            primaryContainer, secondaryContainer, tertiaryContainer.
-        When provided (and len >= 2), palette_from_matugen is used instead
-        of palette_from_color.
-
-    surface : str or None
-        Material You surface colour hex (e.g. "#141218" dark, "#FEFBFF" light).
-        Used directly as the background — no lightness manipulation applied.
-        None → palette_from_matugen computes a near-black/near-white fallback.
-
-    accent : str or None
-        Material You inversePrimary hex.  Used as the highlight/sparkle colour.
-        None → palette_from_matugen falls back to colors[0] (primary).
-
-    mode : "auto" | "dark" | "light"
-        "auto"  → infer dark/light from the surface or seed colour's lightness.
-        "dark"  → always produce a dark background.
-        "light" → always produce a light background.
-        The plugin passes the current SessionData.isLightMode value.
-
-    output : str or None
-        Absolute path for the output SVG file.
-        None → ~/Pictures/DankWallpapers/dms_wallpaper_current.svg
-               (always overwritten; use --output for named files)
-
-    Returns
-    -------
-    (output_path: str, chosen_style: str)
-        output_path is printed to stdout so the QML process can read it.
-    """
+    
     rng = random.Random(
         seed
     )  # https://docs.python.org/3/library/random.html#random.Random
@@ -1230,22 +619,10 @@ def generate(
     Path(output).write_text(svg.render(), encoding="utf-8")
     return output, style
 
-
 # ── CLI entry point ────────────────────────────────────────────────────────────
 
-
 def main():
-    """
-    Parse CLI arguments and call generate().
-
-    The script is designed to be called by VectorWallpaper.qml via
-    Quickshell's Process type, but it is also usable interactively.
-
-    On success it prints the output SVG path to stdout (one line) and exits 0.
-    On failure it prints a message to stderr and exits non-zero.
-
-    argparse docs: https://docs.python.org/3/library/argparse.html
-    """
+    
     parser = argparse.ArgumentParser(
         description="DankMaterialShell Vector Wallpaper Generator",
         formatter_class=argparse.RawDescriptionHelpFormatter,
@@ -1349,7 +726,6 @@ def main():
 
     # Print path to stdout — VectorWallpaper.qml reads this via SplitParser
     print(out_path)
-
 
 if __name__ == "__main__":
     main()
