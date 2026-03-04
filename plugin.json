@@ -1,0 +1,26 @@
+{
+  "id": "VectorWallpaper",
+  "name": "VectorWallpaper",
+  "capabilities": [
+    "dankbar-widget"
+  ],
+  "category": "utilities",
+  "repo": "https://github.com/markuz83/VectorWallpaper",
+  "author": "markuz83",
+  "description": "Generates random wallpaper using the shell's theme.",
+  "dependencies": [
+    "python3",
+    "rsvg-convert",
+    "swww",
+    "swaybg",
+    "hyprpaper"
+  ],
+  "compositors": [
+    "niri",
+    "hyprland"
+  ],
+  "distro": [
+    "any"
+  ],
+  "screenshot": "https://github.com/markuz83/VectorWallpaper/Assets/VectorWallpaper_screenshot.png"
+}
